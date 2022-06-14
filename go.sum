@@ -1,0 +1,4 @@
+github.com/cyanial/kvraft v0.0.0-20220614023026-11c95e464b2e h1:wvR9ZqBpOK2ZUqdsnEz9hW32wPNYMq44iCZ5xicmZlk=
+github.com/cyanial/kvraft v0.0.0-20220614023026-11c95e464b2e/go.mod h1:dxtMMeS0vocAZ0yQ4eCbFI2mSKiBwmyEyMF7eSGPr6g=
+github.com/cyanial/raft v0.0.1 h1:sfx2pjylziiMsEZVngPSftSMv3P78IPx3KuWsJYc+0Q=
+github.com/cyanial/raft v0.0.1/go.mod h1:VEzfryH55NH8W72AQcxpe0sC165QvPf0lJwFLSWBySY=
