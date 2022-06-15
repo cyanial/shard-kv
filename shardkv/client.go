@@ -11,6 +11,7 @@ package shardkv
 import (
 	"crypto/rand"
 	"math/big"
+	"sync/atomic"
 	"time"
 
 	"github.com/cyanial/raft/labrpc"
@@ -42,7 +43,9 @@ type Clerk struct {
 	sm       *shardctrler.Clerk
 	config   shardctrler.Config
 	make_end func(string) *labrpc.ClientEnd
-	// You will have to modify this struct.
+
+	clientId    int64
+	sequenceNum int64
 }
 
 //
@@ -55,10 +58,14 @@ type Clerk struct {
 // send RPCs.
 //
 func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.ClientEnd) *Clerk {
-	ck := new(Clerk)
-	ck.sm = shardctrler.MakeClerk(ctrlers)
-	ck.make_end = make_end
-	// You'll have to add code here.
+	ck := &Clerk{
+		sm:          shardctrler.MakeClerk(ctrlers),
+		make_end:    make_end,
+		clientId:    nrand(),
+		sequenceNum: 0,
+	}
+
+	ck.config = ck.sm.Query(-1)
 	return ck
 }
 
@@ -69,8 +76,12 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 // You will have to modify this function.
 //
 func (ck *Clerk) Get(key string) string {
-	args := GetArgs{}
-	args.Key = key
+
+	args := GetArgs{
+		Key:         key,
+		ClientId:    ck.clientId,
+		SequenceNum: atomic.AddInt64(&ck.sequenceNum, 1),
+	}
 
 	for {
 		shard := key2shard(key)
@@ -95,7 +106,6 @@ func (ck *Clerk) Get(key string) string {
 		ck.config = ck.sm.Query(-1)
 	}
 
-	return ""
 }
 
 //
@@ -103,10 +113,13 @@ func (ck *Clerk) Get(key string) string {
 // You will have to modify this function.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := PutAppendArgs{}
-	args.Key = key
-	args.Value = value
-	args.Op = op
+	args := PutAppendArgs{
+		Key:         key,
+		Value:       value,
+		Op:          op,
+		ClientId:    ck.clientId,
+		SequenceNum: atomic.AddInt64(&ck.sequenceNum, 1),
+	}
 
 	for {
 		shard := key2shard(key)
