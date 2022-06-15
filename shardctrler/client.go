@@ -55,15 +55,12 @@ func (ck *Clerk) Query(num int) Config {
 
 	for {
 
-		// DPrintf("[Client %d, leader=%d] Get, k=%s - ", ck.clientId, leaderId, key)
-
 		reply := &QueryReply{}
 		ok := ck.servers[leaderId].Call("ShardCtrler.Query", args, reply)
 		if ok && reply.WrongLeader == false {
 			return reply.Config
 		}
 
-		// DPrintf("[Client %d, leader=%d] Get, k=%s - Wrong Leader", ck.clientId, leaderId, key)
 		leaderId = ck.changeLeader()
 
 		time.Sleep(100 * time.Millisecond)
@@ -82,15 +79,12 @@ func (ck *Clerk) Join(servers map[int][]string) {
 
 	for {
 
-		// DPrintf
-
 		reply := &JoinReply{}
 		ok := ck.servers[leaderId].Call("ShardCtrler.Join", args, reply)
 		if ok && reply.WrongLeader == false {
 			return
 		}
 
-		// DPrintf
 		leaderId = ck.changeLeader()
 
 		time.Sleep(100 * time.Millisecond)
@@ -109,15 +103,12 @@ func (ck *Clerk) Leave(gids []int) {
 
 	for {
 
-		// DPrintf
-
 		reply := &LeaveReply{}
 		ok := ck.servers[leaderId].Call("ShardCtrler.Leave", args, reply)
 		if ok && reply.WrongLeader == false {
 			return
 		}
 
-		// DPrintf
 		leaderId = ck.changeLeader()
 
 		time.Sleep(100 * time.Millisecond)
@@ -137,15 +128,12 @@ func (ck *Clerk) Move(shard int, gid int) {
 
 	for {
 
-		// DPrintf
-
 		reply := &MoveReply{}
 		ok := ck.servers[leaderId].Call("ShardCtrler.Move", args, reply)
 		if ok && reply.WrongLeader == false {
 			return
 		}
 
-		// DPrintf
 		leaderId = ck.changeLeader()
 
 		time.Sleep(100 * time.Millisecond)
