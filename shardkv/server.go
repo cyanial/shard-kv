@@ -2,37 +2,283 @@ package shardkv
 
 import (
 	"sync"
+	"time"
 
 	"github.com/cyanial/raft"
 	"github.com/cyanial/raft/labgob"
 	"github.com/cyanial/raft/labrpc"
+	"github.com/cyanial/shard-kv/shardctrler"
 )
 
 type Op struct {
-	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	Method string
+
+	// K/V service
+	Key   string
+	Value string
+
+	// Poll Config
+	Config shardctrler.Config
+
+	// Move Shard
+	ShardData []ShardComponent
+	ConfigNum int
+
+	ClientId    int64
+	SequenceNum int64
 }
 
 type ShardKV struct {
-	mu           sync.Mutex
-	me           int
-	rf           *raft.Raft
-	applyCh      chan raft.ApplyMsg
-	make_end     func(string) *labrpc.ClientEnd
-	gid          int
-	ctrlers      []*labrpc.ClientEnd
+	mu       sync.Mutex
+	me       int
+	rf       *raft.Raft
+	gid      int
+	applyCh  chan raft.ApplyMsg
+	make_end func(string) *labrpc.ClientEnd
+	ctrlers  []*labrpc.ClientEnd
+	mck      *shardctrler.Clerk
+	config   shardctrler.Config
+
 	maxraftstate int // snapshot if log grows this big
 
-	// Your definitions here.
+	shardMoving  [shardctrler.NShards]bool
+	shardStore   [shardctrler.NShards]map[string]string
+	lastApplySeq [shardctrler.NShards]map[int64]int64
+
+	waitApplyCh map[int]chan Op
+
+	snapshotIndex int
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+
+	_, isLeader := kv.rf.GetState()
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	shard := key2shard(args.Key)
+
+	serve, avail := kv.CheckShardState(args.ConfigNum, shard)
+
+	if !serve {
+		reply.Err = ErrWrongGroup
+		return
+	}
+
+	if !avail {
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	op := Op{
+		Method:      "Get",
+		Key:         args.Key,
+		ClientId:    args.ClientId,
+		SequenceNum: args.SequenceNum,
+	}
+
+	index, _, _ := kv.rf.Start(op)
+
+	kv.mu.Lock()
+	indexCh, exist := kv.waitApplyCh[index]
+	if !exist {
+		kv.waitApplyCh[index] = make(chan Op)
+		indexCh = kv.waitApplyCh[index]
+	}
+	kv.mu.Unlock()
+
+	select {
+	case commitOp := <-indexCh:
+		if commitOp.ClientId == op.ClientId && commitOp.SequenceNum == op.SequenceNum {
+
+			kv.mu.Lock()
+			shard := key2shard(op.Key)
+			value, has := kv.shardStore[shard][op.Key]
+			kv.lastApplySeq[shard][op.ClientId] = op.SequenceNum
+			kv.mu.Unlock()
+
+			if has {
+				reply.Err = OK
+				reply.Value = value
+			} else {
+				reply.Err = ErrNoKey
+				reply.Value = ""
+			}
+		} else {
+			reply.Err = ErrWrongLeader
+		}
+
+	case <-time.After(Server_Timeout):
+
+		_, isLeader := kv.rf.GetState()
+		if kv.isDuplicatedCmd(op.ClientId, op.SequenceNum, key2shard(op.Key)) && isLeader {
+			kv.mu.Lock()
+			shard := key2shard(op.Key)
+			value, has := kv.shardStore[shard][op.Key]
+			kv.lastApplySeq[shard][op.ClientId] = op.SequenceNum
+			kv.mu.Unlock()
+
+			if has {
+				reply.Err = OK
+				reply.Value = value
+			} else {
+				reply.Err = ErrNoKey
+				reply.Value = ""
+			}
+		} else {
+			reply.Err = ErrWrongLeader
+		}
+	}
+
+	kv.mu.Lock()
+	delete(kv.waitApplyCh, index)
+	kv.mu.Unlock()
+	close(indexCh)
 }
 
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+
+	_, isLeader := kv.rf.GetState()
+	if !isLeader {
+		DPrintf("[Server %d] %s, Wrong Leader - first",
+			kv.me, args.Op)
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	shard := key2shard(args.Key)
+
+	serve, avail := kv.CheckShardState(args.ConfigNum, shard)
+
+	if !serve {
+		DPrintf("[Server %d] %s, Wrong Group",
+			kv.me, args.Op)
+		reply.Err = ErrWrongGroup
+		return
+	}
+
+	if !avail {
+		DPrintf("[Server %d] %s, Wrong Leader - avail",
+			kv.me, args.Op)
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	op := Op{
+		Method:      args.Op,
+		Key:         args.Key,
+		Value:       args.Value,
+		ClientId:    args.ClientId,
+		SequenceNum: args.SequenceNum,
+	}
+
+	index, _, _ := kv.rf.Start(op)
+
+	kv.mu.Lock()
+	indexCh, exist := kv.waitApplyCh[index]
+	if !exist {
+		kv.waitApplyCh[index] = make(chan Op)
+		indexCh = kv.waitApplyCh[index]
+	}
+	kv.mu.Unlock()
+
+	select {
+	case commitOp := <-indexCh:
+		if commitOp.ClientId == op.ClientId && commitOp.SequenceNum == op.SequenceNum {
+			reply.Err = OK
+		} else {
+			DPrintf("[Server %d] %s, Wrong Leader - commitop",
+				kv.me, args.Op)
+
+			reply.Err = ErrWrongLeader
+		}
+	case <-time.After(Server_Timeout):
+		if kv.isDuplicatedCmd(op.ClientId, op.SequenceNum, shard) {
+			reply.Err = OK
+		} else {
+			DPrintf("[Server %d] %s, Wrong Leader - timeout",
+				kv.me, args.Op)
+			reply.Err = ErrWrongLeader
+		}
+	}
+
+	kv.mu.Lock()
+	delete(kv.waitApplyCh, index)
+	kv.mu.Unlock()
+	close(indexCh)
+}
+
+// RPC handler
+func (kv *ShardKV) MoveShard(args *MoveShardArgs, reply *MoveShardReply) {
+
+	kv.mu.Lock()
+	myConfigNum := kv.config.Num
+	kv.mu.Unlock()
+	if args.ConfigNum > myConfigNum {
+		reply.ConfigNum = myConfigNum
+		return
+	}
+
+	if args.ConfigNum < myConfigNum {
+		reply.Err = OK
+		return
+	}
+
+	if kv.CheckMoveState(args.Data) {
+		reply.Err = OK
+		return
+	}
+
+	op := Op{
+		Method:    "MoveShard",
+		ShardData: args.Data,
+		ConfigNum: args.ConfigNum,
+	}
+
+	index, _, _ := kv.rf.Start(op)
+
+	kv.mu.Lock()
+	indexCh, exist := kv.waitApplyCh[index]
+	if !exist {
+		kv.waitApplyCh[index] = make(chan Op)
+		indexCh = kv.waitApplyCh[index]
+	}
+	kv.mu.Unlock()
+
+	select {
+	case commitOp := <-indexCh:
+		kv.mu.Lock()
+		tempConfigNum := kv.config.Num
+		kv.mu.Unlock()
+		if commitOp.ConfigNum == args.ConfigNum && args.ConfigNum <= tempConfigNum &&
+			kv.CheckMoveState(args.Data) {
+			reply.ConfigNum = tempConfigNum
+			reply.Err = OK
+		} else {
+			reply.Err = ErrWrongLeader
+		}
+
+	case <-time.After(Server_Timeout):
+
+		kv.mu.Lock()
+		_, isLeader := kv.rf.GetState()
+		tempConfigNum := kv.config.Num
+		kv.mu.Unlock()
+		if args.ConfigNum <= tempConfigNum && kv.CheckMoveState(args.Data) &&
+			isLeader {
+			reply.ConfigNum = tempConfigNum
+			reply.Err = OK
+		} else {
+			reply.Err = ErrWrongLeader
+		}
+	}
+
+	kv.mu.Lock()
+	delete(kv.waitApplyCh, index)
+	kv.mu.Unlock()
+	close(indexCh)
 }
 
 //
@@ -44,6 +290,92 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 func (kv *ShardKV) Kill() {
 	kv.rf.Kill()
 	// Your code here, if desired.
+}
+
+func (kv *ShardKV) configPoller() {
+	for {
+		kv.mu.Lock()
+		lastConfigNum := kv.config.Num
+		_, isLeader := kv.rf.GetState()
+		kv.mu.Unlock()
+
+		if !isLeader {
+			time.Sleep(PollConfig_Timeout)
+			continue
+		}
+
+		newConfig := kv.mck.Query(lastConfigNum + 1)
+		if newConfig.Num == lastConfigNum+1 {
+			// a new config
+			op := Op{
+				Method: "Config",
+				Config: newConfig,
+			}
+
+			kv.mu.Lock()
+			if _, isLeader := kv.rf.GetState(); isLeader {
+				kv.rf.Start(op)
+			}
+			kv.mu.Unlock()
+		}
+
+		time.Sleep(PollConfig_Timeout)
+	}
+}
+
+func (kv *ShardKV) applier() {
+	for applyMsg := range kv.applyCh {
+
+		if applyMsg.CommandValid {
+			kv.ProcessCommand(applyMsg)
+
+		} else if applyMsg.SnapshotValid {
+			kv.mu.Lock()
+			if kv.rf.CondInstallSnapshot(applyMsg.SnapshotTerm, applyMsg.SnapshotIndex, applyMsg.Snapshot) {
+				kv.InstallSnapshot(applyMsg.Snapshot)
+				kv.snapshotIndex = applyMsg.SnapshotIndex
+			}
+			kv.mu.Unlock()
+		}
+
+	}
+}
+
+func (kv *ShardKV) shardSender() {
+	for {
+		kv.mu.Lock()
+		_, isLeader := kv.rf.GetState()
+		kv.mu.Unlock()
+
+		if !isLeader {
+			time.Sleep(SendShard_Timeout)
+			continue
+		}
+
+		noMove := true
+		kv.mu.Lock()
+		for shard := 0; shard < shardctrler.NShards; shard++ {
+			if kv.shardMoving[shard] {
+				noMove = false
+			}
+		}
+		kv.mu.Unlock()
+
+		if noMove {
+			time.Sleep(SendShard_Timeout)
+			continue
+		}
+
+		needSend, sendData := kv.haveSendData()
+		if !needSend {
+			time.Sleep(SendShard_Timeout)
+			continue
+		}
+
+		kv.sendShard(sendData)
+
+		time.Sleep(SendShard_Timeout)
+	}
 }
 
 //
@@ -79,20 +411,39 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
 
-	kv := new(ShardKV)
-	kv.me = me
-	kv.maxraftstate = maxraftstate
-	kv.make_end = make_end
-	kv.gid = gid
-	kv.ctrlers = ctrlers
+	kv := &ShardKV{
+		me:            me,
+		gid:           gid,
+		applyCh:       make(chan raft.ApplyMsg),
+		make_end:      make_end,
+		ctrlers:       ctrlers,
+		maxraftstate:  maxraftstate,
+		shardMoving:   [shardctrler.NShards]bool{},
+		waitApplyCh:   make(map[int]chan Op),
+		snapshotIndex: 0,
+	}
 
-	// Your initialization code here.
-
-	// Use something like this to talk to the shardctrler:
-	// kv.mck = shardctrler.MakeClerk(kv.ctrlers)
-
-	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.mck = shardctrler.MakeClerk(kv.ctrlers)
+
+	for i := 0; i < shardctrler.NShards; i++ {
+		kv.shardStore[i] = make(map[string]string)
+		kv.lastApplySeq[i] = make(map[int64]int64)
+	}
+
+	if persister.SnapshotSize() > 0 {
+		// install snapshot
+		kv.InstallSnapshot(persister.ReadSnapshot())
+	}
+
+	// start configPoller
+	go kv.configPoller()
+
+	// start applier
+	go kv.applier()
+
+	// start shard sender
+	go kv.shardSender()
 
 	return kv
 }

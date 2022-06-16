@@ -66,6 +66,9 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	}
 
 	ck.config = ck.sm.Query(-1)
+
+	DPrintf("Init Clerk: %d, Config #%d", ck.clientId, ck.config.Num)
+
 	return ck
 }
 
@@ -91,20 +94,33 @@ func (ck *Clerk) Get(key string) string {
 			// try each server for the shard.
 			for si := 0; si < len(servers); si++ {
 				srv := ck.make_end(servers[si])
+
+				DPrintf("[Client %d, To %s] Get, shard=%d, gid=%d, k=%s - ",
+					ck.clientId, servers[si], shard, gid, args.Key)
+
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
+					DPrintf("[Client %d, To %s] Get, shard=%d, gid=%d, k=%s, v=%s - OK||No Key",
+						ck.clientId, servers[si], shard, gid, args.Key, reply.Value)
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
+					DPrintf("[Client %d, To %s] Get, shard=%d, gid=%d, k=%s - Wrong Group",
+						ck.clientId, servers[si], shard, gid, args.Key)
 					break
 				}
+				DPrintf("[Client %d, To %s] Get, shard=%d, gid=%d, k=%s - Wrong Leader",
+					ck.clientId, servers[si], shard, gid, args.Key)
 				// ... not ok, or ErrWrongLeader
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 		// ask controler for the latest configuration.
 		ck.config = ck.sm.Query(-1)
+		DPrintf("[Client %d] Query Config #%d",
+			ck.clientId, ck.config.Num)
+
 		args.ConfigNum = ck.config.Num
 	}
 
@@ -130,20 +146,33 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		if servers, ok := ck.config.Groups[gid]; ok {
 			for si := 0; si < len(servers); si++ {
 				srv := ck.make_end(servers[si])
+
+				DPrintf("[Client %d, To %s] %s, shard=%d, gid=%d, k=%s, v=%s - ",
+					ck.clientId, servers[si], args.Op, shard, gid, args.Key, args.Value)
+
 				var reply PutAppendReply
 				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
 				if ok && reply.Err == OK {
+					DPrintf("[Client %d, To %s] %s, shard=%d, gid=%d, k=%s, v=%s - OK",
+						ck.clientId, servers[si], args.Op, shard, gid, args.Key, args.Value)
 					return
 				}
 				if ok && reply.Err == ErrWrongGroup {
+					DPrintf("[Client %d, To %s] %s, shard=%d, gid=%d, k=%s, v=%s - Wrong Group",
+						ck.clientId, servers[si], args.Op, shard, gid, args.Key, args.Value)
 					break
 				}
+				DPrintf("[Client %d, To %s] %s, shard=%d, gid=%d, k=%s, v=%s - Wrong Leader",
+					ck.clientId, servers[si], args.Op, shard, gid, args.Key, args.Value)
 				// ... not ok, or ErrWrongLeader
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 		// ask controler for the latest configuration.
 		ck.config = ck.sm.Query(-1)
+		DPrintf("[Client %d] Query Config #%d",
+			ck.clientId, ck.config.Num)
+
 		args.ConfigNum = ck.config.Num
 	}
 }

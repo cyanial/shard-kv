@@ -18,9 +18,24 @@ const (
 
 type Err string
 
+type ShardComponent struct {
+	ShardIndex   int
+	ShardStore   map[string]string
+	LastApplySeq map[int64]int64
+}
+
+type MoveShardArgs struct {
+	ConfigNum int
+	Data      []ShardComponent
+}
+
+type MoveShardReply struct {
+	Err       Err
+	ConfigNum int
+}
+
 // Put or Append
 type PutAppendArgs struct {
-	// You'll have to add definitions here.
 	Key         string
 	Value       string
 	Op          string // "Put" or "Append"
