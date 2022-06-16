@@ -26,6 +26,7 @@ type PutAppendArgs struct {
 	Op          string // "Put" or "Append"
 	ClientId    int64
 	SequenceNum int64
+	ConfigNum   int
 }
 
 type PutAppendReply struct {
@@ -36,6 +37,7 @@ type GetArgs struct {
 	Key         string
 	ClientId    int64
 	SequenceNum int64
+	ConfigNum   int
 }
 
 type GetReply struct {
