@@ -81,6 +81,7 @@ func (ck *Clerk) Get(key string) string {
 		Key:         key,
 		ClientId:    ck.clientId,
 		SequenceNum: atomic.AddInt64(&ck.sequenceNum, 1),
+		ConfigNum:   ck.config.Num,
 	}
 
 	for {
@@ -104,6 +105,7 @@ func (ck *Clerk) Get(key string) string {
 		time.Sleep(100 * time.Millisecond)
 		// ask controler for the latest configuration.
 		ck.config = ck.sm.Query(-1)
+		args.ConfigNum = ck.config.Num
 	}
 
 }
@@ -119,6 +121,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		Op:          op,
 		ClientId:    ck.clientId,
 		SequenceNum: atomic.AddInt64(&ck.sequenceNum, 1),
+		ConfigNum:   ck.config.Num,
 	}
 
 	for {
@@ -141,6 +144,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		time.Sleep(100 * time.Millisecond)
 		// ask controler for the latest configuration.
 		ck.config = ck.sm.Query(-1)
+		args.ConfigNum = ck.config.Num
 	}
 }
 
